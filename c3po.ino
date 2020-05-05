@@ -85,6 +85,7 @@ void setup() {
   mcp.pinMode(5, OUTPUT);
 
   drawlogo();
+  delay(1000);
 }
  
 // the loop function runs over and over again forever
@@ -162,7 +163,7 @@ void updateLEDs(const int co2, const float temperature, const float pressure, co
 //  mcp.digitalWrite(2, LOW); // 1 Green
   
 //  mcp.digitalWrite(3, HIGH); // 2 Red
-  mcp.digitalWrite(3, HIGH); // 2 Red
+  mcp.digitalWrite(3, LOW); // 2 Red
 //  mcp.digitalWrite(4, HIGH); // 2 Yellow
   mcp.digitalWrite(4, LOW); // 2 Yellow
   mcp.digitalWrite(5, HIGH); // 2 Green
