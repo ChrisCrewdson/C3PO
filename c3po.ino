@@ -17,6 +17,22 @@
 #define LOGO_HEIGHT   64
 #define LOGO_WIDTH    64
 
+#define CSV_HEADER F("co2,temperature,pressure,humidity")
+
+const int CARD_CHIP_SELECT = 4;
+
+const unsigned long READ_PERIOD = 1000000; // one second
+const unsigned long STATE_PERIOD = 3000000; // three seconds
+
+// green levels
+// co2 < 2000 ppm
+const float GREEN_LIMIT_CO2 = 2000.0F;
+// pressure 2.0-3.5 PSI
+const float GREEN_LIMIT_PRESSURE_MIN = 14.5F;
+const float GREEN_LIMIT_PRESSURE_MAX = 18.0F;
+// temperature < 75 F
+const float GREEN_LIMIT_TEMPERATURE = 75.0F;
+
 const unsigned char psfLogo [] PROGMEM = { // 64x64px
   0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 
   0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 
@@ -57,24 +73,57 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 ezButton button(15);
 Adafruit_BME280 bme;
 
-int co2 = 400;
-bool sdCardReady = false;
-const int cardChipSelect = 4;
+File logfile;
 
-// the setup function runs once when you press reset or power the board
+int co2 = 400; // todo: remove in favor of sensor
+
+bool manual = false;
+int displayState = 0;
+int alarm = 0;
+
 void setup() {
-  // SD card setup
-  Serial.print("Initializing SD card...");
-  sdCardReady = SD.begin(cardChipSelect);
-  if (!sdCardReady) {
-    Serial.println("SD card initialization failed or card not present");
-  } else {
-    Serial.println("SD card initialized");
+  display.begin(SSD1306_SWITCHCAPVCC, SSD_ADDRESS);
+  drawlogo();
+
+  while(!Serial && millis()<3000) {
+    //wait for USB serial to connect or 3 seconds to elapse
   }
+  Serial.begin(9600);
+  Serial.println(F("startup"));
+
+  bool sdCardReady = SD.begin(CARD_CHIP_SELECT);
+  if (!sdCardReady) {
+    Serial.println(F("Card init. failed!"));
+    error(2);
+  } else {
+    Serial.println(F("SD card ready"));
+  }
+  char filename[15];
+  strcpy(filename, "/LOG00.TXT");
+  for (uint8_t i = 0; i < 100; i++) {
+    filename[4] = '0' + i/10;
+    filename[5] = '0' + i%10;
+    // create if does not exist, do not open existing, write, sync after write
+    if (!SD.exists(filename)) {
+      Serial.print(F("will try to use "));
+      Serial.println(filename);
+      break;
+    }
+  }
+  logfile = SD.open(filename, FILE_WRITE);
+  if(!logfile) {
+    Serial.print(F("Couldnt create ")); 
+    Serial.println(filename);
+    error(3);
+  }
+  
+  logfile.println(CSV_HEADER);
+  logfile.flush();
+  Serial.println(CSV_HEADER);
   
   bme.begin(BME_ADDRESS);
 
-  display.begin(SSD1306_SWITCHCAPVCC, SSD_ADDRESS);
+  button.setDebounceTime(50);
 
   mcp.begin(MCP_ADDRESS);
   mcp.pinMode(0, OUTPUT);
@@ -84,29 +133,40 @@ void setup() {
   mcp.pinMode(4, OUTPUT);
   mcp.pinMode(5, OUTPUT);
 
-  drawlogo();
   delay(1000);
 }
- 
-// the loop function runs over and over again forever
+
 void loop() {
+  if (displayState > 3) displayState = 0;
 
   button.loop();
   if(button.isPressed()) {
-      co2++;
+    manual = !manual;
+    displayState = 0;
   }
 
-  float temperature = bme.readTemperature(); // C
-  float pressure = bme.readPressure() / 100.0F; // hPa
-  float humidity = bme.readHumidity();
+  static unsigned long lastRead;
+  if (micros() - lastRead >= READ_PERIOD) {
+    lastRead += READ_PERIOD;
 
-  updateLEDs(co2, temperature, pressure, humidity);
-  updateDisplay(co2, temperature, pressure, humidity);
-  writeToSD(co2, temperature, pressure, humidity);
+    float temperatureC = bme.readTemperature(); // C
+    float temperature = temperatureC * 9.0F / 5.0F + 32.0F;
+    float pressureHpa = bme.readPressure(); // hPa -> .0001450 PSI
+    float pressure = pressureHpa * 0.00015F; // PSI
+    float humidity = bme.readHumidity();
 
-  // todo: this won't work for buttons, instead wrap the above in a sampling delay
-  delay(1000);
-  yield();
+    writeToSD(co2, temperature, pressure, humidity);
+
+    updateLEDs(co2, temperature, pressure);
+    updateDisplay(alarm > 0 ? alarm : displayState, co2, temperature, pressure);
+  }
+
+  static unsigned long lastStateChange;
+  if (!manual && micros() - lastStateChange >= STATE_PERIOD) {
+    lastStateChange += STATE_PERIOD;
+    displayState++;
+    if (displayState > 3) displayState = 1; // cycling skips summary
+  }
 }
 
 void drawlogo(void) {
@@ -119,82 +179,95 @@ void drawlogo(void) {
   display.display();
 }
 
-void updateLEDs(const int co2, const float temperature, const float pressure, const float humidity) {
-  if (co2 < 2000.0) {
+void updateLEDs(const int co2, const float temperature, const float pressure) {
+  if (co2 < GREEN_LIMIT_CO2) {
     // Green
-  } else if (co2 < 8000.0) {
-    // Yellow
+    mcp.digitalWrite(0, LOW); // 1 Red
+    mcp.digitalWrite(2, HIGH); // 1 Green
   } else {
     // Red
+    mcp.digitalWrite(0, HIGH); // 1 Red
+    mcp.digitalWrite(2, LOW); // 1 Green
   }
 
-  if (humidity < 60.0) {
+  if (pressure < GREEN_LIMIT_PRESSURE_MAX) {
     // Green
-  } else if (humidity < 70.0) {
-    // Yellow
+    mcp.digitalWrite(3, LOW); // 2 Red
+    mcp.digitalWrite(5, HIGH); // 2 Green
   } else {
     // Red
+    mcp.digitalWrite(3, HIGH); // 2 Red
+    mcp.digitalWrite(5, LOW); // 2 Green
   }
 
-  if (pressure < 250000.0) {
-    // Green
-    Serial.print("green");
-  } else if (pressure < 350000.0) {
-    // Yellow
-    Serial.print("yellow");
-  } else {
-    // Red
-    Serial.print("red");
-  }
-
-  if (temperature < 75.0) {
-    // Green
-  } else if (temperature < 80.0) {
-    // Yellow
-  } else {
-    // Red
-  }
-
-//  mcp.digitalWrite(0, HIGH); // 1 Red
-  mcp.digitalWrite(0, LOW); // 1 Red
-//  mcp.digitalWrite(1, HIGH); // 1 Yellow
-  mcp.digitalWrite(1, LOW); // 1 Yellow
-  mcp.digitalWrite(2, HIGH); // 1 Green
-//  mcp.digitalWrite(2, LOW); // 1 Green
-  
-//  mcp.digitalWrite(3, HIGH); // 2 Red
-  mcp.digitalWrite(3, LOW); // 2 Red
-//  mcp.digitalWrite(4, HIGH); // 2 Yellow
-  mcp.digitalWrite(4, LOW); // 2 Yellow
-  mcp.digitalWrite(5, HIGH); // 2 Green
-//  mcp.digitalWrite(5, LOW); // 2 Green
+  // todo: add third light
+  // if (temperature < GREEN_LIMIT_TEMPERATURE) {
+  //   // Green
+  // } else {
+  //   // Red
+  // }
 }
 
-void updateDisplay(const int co2, const float temperature, const float pressure, const float humidity) {
-  // todo: mode parameter to cycle between detailed displays
+void updateDisplay(const int displayState, const int co2, const float temperature, const float pressure) {
+  switch (displayState) {
+    case 1:
+      // co2
+      display.clearDisplay();
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0,0);
+      display.setTextSize(3);
+      display.println(F("CO2"));
+      display.setTextSize(4);
+      display.println(co2);
+      display.display();
+      break;
+    case 2:
+      // temperature
+      display.clearDisplay();
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0,0);
+      display.setTextSize(3);
+      display.println(F("Temp"));
+      display.setTextSize(4);
+      display.println(temperature, 1);
+      display.display();
+      break;
+    case 3:
+      // pressure
+      display.clearDisplay();
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0,0);
+      display.setTextSize(3);
+      display.println(F("Pres"));
+      display.setTextSize(4);
+      display.println(pressure, 2);
+      display.display();
+      break;
+    case 0:
+    default:
+      displaySummary(co2, temperature, pressure);
+  }
   
+}
+
+void displaySummary(const int co2, const float temperature, const float pressure) {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
   display.setCursor(0,0);
   display.setTextSize(2);
-  
+
   display.print(F("CO2: "));
   display.println(co2);
   display.print(F("Pres: "));
-  display.println(pressure, 0);
+  display.println(pressure, 1);
   display.print(F("Temp: "));
   display.println(temperature, 1);
-  display.print(F("Humi: "));
-  display.println(humidity, 1);
-  
+
   display.display();
 }
 
 void writeToSD(const int co2, const float temperature, const float pressure, const float humidity) {
-  // open the file (only one file can be open at a time)
-  File dataFile = SD.open("datalog.csv", FILE_WRITE);
-
   String dataString = "";
   dataString += String(co2);
   dataString += ",";
@@ -203,13 +276,24 @@ void writeToSD(const int co2, const float temperature, const float pressure, con
   dataString += String(pressure);
   dataString += ",";
   dataString += String(humidity);
+  logfile.println(dataString);
+  logfile.flush();
 
-  // if the file is available, write to it:
-  if (dataFile) {
-    dataFile.println(dataString);
-    dataFile.close();
-  } else {
-    // file not available
-    Serial.println("error opening datalog file");
+  Serial.println(dataString);
+}
+
+// blink out an error code
+void error(uint8_t errno) {
+  while(1) {
+    uint8_t i;
+    for (i=0; i<errno; i++) {
+      digitalWrite(13, HIGH);
+      delay(100);
+      digitalWrite(13, LOW);
+      delay(100);
+    }
+    for (i=errno; i<10; i++) {
+      delay(200);
+    }
   }
 }
