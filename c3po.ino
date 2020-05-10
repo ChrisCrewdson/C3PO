@@ -2,9 +2,14 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_MCP23017.h>
 #include <Adafruit_Sensor.h>
+#include <Adafruit_SPITFT_Macros.h>
+#include <Adafruit_SPITFT.h>
 #include <Adafruit_SSD1306.h>
-#include <ezButton.h>
+#include <Adafruit_SSD1306.h>
+#include <gfxfont.h>
+#include <RTClib.h>
 #include <SD.h>
+#include <splash.h>
 #include <Wire.h>
 
 #define MCP_ADDRESS 0x27
@@ -17,9 +22,17 @@
 #define LOGO_HEIGHT   64
 #define LOGO_WIDTH    64
 
-#define CSV_HEADER F("co2,temperature,pressure,humidity")
+#define MCP_CO2_GREEN_LED_PIN 0
+#define MCP_CO2_RED_LED_PIN 1
+#define MCP_TEMP_GREEN_LED_PIN 2
+#define MCP_TEMP_RED_LED_PIN 3
+#define MCP_PRESS_GREEN_LED_PIN 4
+#define MCP_PRESS_RED_LED_PIN 5
+#define MCP_INPUTPIN 6
 
-const int CARD_CHIP_SELECT = 4;
+#define CSV_HEADER F("datetime,co2,temperature,pressure,humidity")
+
+#define CARD_CHIP_SELECT 4
 
 const unsigned long READ_PERIOD = 1000000; // one second
 const unsigned long STATE_PERIOD = 3000000; // three seconds
@@ -32,6 +45,7 @@ const float GREEN_LIMIT_PRESSURE_MIN = 14.5F;
 const float GREEN_LIMIT_PRESSURE_MAX = 18.0F;
 // temperature < 75 F
 const float GREEN_LIMIT_TEMPERATURE = 75.0F;
+// const float GREEN_LIMIT_TEMPERATURE = 95.0F;
 
 const unsigned char psfLogo [] PROGMEM = { // 64x64px
   0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 
@@ -70,8 +84,8 @@ const unsigned char psfLogo [] PROGMEM = { // 64x64px
 
 Adafruit_MCP23017 mcp;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-ezButton button(15);
 Adafruit_BME280 bme;
+RTC_DS3231 rtc;
 
 File logfile;
 
@@ -80,12 +94,17 @@ int co2 = 400; // todo: remove in favor of sensor
 bool manual = false;
 int displayState = 0;
 int alarm = 0;
+int buttonState = LOW;     // the current reading from the input pin
+int lastButtonState = LOW; // the previous reading from the input pin
+
+unsigned long lastDebounceTime = 0; // the last time the output pin was toggled
+unsigned long debounceDelay = 75;   // the debounce time; increase if the output flickers
 
 void setup() {
   display.begin(SSD1306_SWITCHCAPVCC, SSD_ADDRESS);
   drawlogo();
 
-  while(!Serial && millis()<3000) {
+  while(!Serial && millis() < 3000) {
     //wait for USB serial to connect or 3 seconds to elapse
   }
   Serial.begin(9600);
@@ -98,6 +117,9 @@ void setup() {
   } else {
     Serial.println(F("SD card ready"));
   }
+
+  // todo: check for and load config for alarm limits
+
   char filename[15];
   strcpy(filename, "/LOG00.TXT");
   for (uint8_t i = 0; i < 100; i++) {
@@ -123,27 +145,24 @@ void setup() {
   
   bme.begin(BME_ADDRESS);
 
-  button.setDebounceTime(50);
-
   mcp.begin(MCP_ADDRESS);
-  mcp.pinMode(0, OUTPUT);
-  mcp.pinMode(1, OUTPUT);
-  mcp.pinMode(2, OUTPUT);
-  mcp.pinMode(3, OUTPUT);
-  mcp.pinMode(4, OUTPUT);
-  mcp.pinMode(5, OUTPUT);
+  mcp.pinMode(MCP_CO2_GREEN_LED_PIN, OUTPUT);
+  mcp.pinMode(MCP_CO2_RED_LED_PIN, OUTPUT);
+  mcp.pinMode(MCP_TEMP_GREEN_LED_PIN, OUTPUT);
+  mcp.pinMode(MCP_TEMP_RED_LED_PIN, OUTPUT);
+  mcp.pinMode(MCP_PRESS_GREEN_LED_PIN, OUTPUT);
+  mcp.pinMode(MCP_PRESS_RED_LED_PIN, OUTPUT);
+  mcp.pinMode(MCP_INPUTPIN, INPUT);
+  mcp.pullUp(MCP_INPUTPIN, HIGH);  // turn on a 100K pullup internally
 
-  delay(1000);
+  delay(1000); // show logo for a second
 }
 
 void loop() {
   if (displayState > 3) displayState = 0;
+  if (alarm > 3) alarm = 0;
 
-  button.loop();
-  if(button.isPressed()) {
-    manual = !manual;
-    displayState = 0;
-  }
+  refreshButtonState();
 
   static unsigned long lastRead;
   if (micros() - lastRead >= READ_PERIOD) {
@@ -157,15 +176,24 @@ void loop() {
 
     writeToSD(co2, temperature, pressure, humidity);
 
-    updateLEDs(co2, temperature, pressure);
+    alarm = updateAlarm(co2, temperature, pressure);
+    updateLEDs(alarm);
     updateDisplay(alarm > 0 ? alarm : displayState, co2, temperature, pressure);
   }
 
   static unsigned long lastStateChange;
-  if (!manual && micros() - lastStateChange >= STATE_PERIOD) {
+  if (micros() - lastStateChange >= STATE_PERIOD) {
+    // todo: remove debugging output
+    Serial.print(F("alarm: ")); Serial.print(alarm);
+    Serial.print(F(" buttonState: ")); Serial.print(buttonState);
+    Serial.print(F(" manual: ")); Serial.print(manual);
+    Serial.print(F(" displayState: ")); Serial.println(displayState);
+
     lastStateChange += STATE_PERIOD;
-    displayState++;
-    if (displayState > 3) displayState = 1; // cycling skips summary
+    if (!manual) {
+      displayState++;
+      if (displayState > 3) displayState = 1; // cycling skips summary
+    }
   }
 }
 
@@ -179,33 +207,61 @@ void drawlogo(void) {
   display.display();
 }
 
-void updateLEDs(const int co2, const float temperature, const float pressure) {
-  if (co2 < GREEN_LIMIT_CO2) {
-    // Green
-    mcp.digitalWrite(0, LOW); // 1 Red
-    mcp.digitalWrite(2, HIGH); // 1 Green
-  } else {
-    // Red
-    mcp.digitalWrite(0, HIGH); // 1 Red
-    mcp.digitalWrite(2, LOW); // 1 Green
-  }
+String getISOTimeNow() {
+  DateTime now = rtc.now();
+  // build an ISO 8601 datetime string
+  char buf1[20];
+  sprintf(buf1, "%04d-%02d-%02dT%02d:%02d:%02dZ", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
 
-  if (pressure < GREEN_LIMIT_PRESSURE_MAX) {
-    // Green
-    mcp.digitalWrite(3, LOW); // 2 Red
-    mcp.digitalWrite(5, HIGH); // 2 Green
-  } else {
-    // Red
-    mcp.digitalWrite(3, HIGH); // 2 Red
-    mcp.digitalWrite(5, LOW); // 2 Green
-  }
+  return String(buf1);
+}
 
-  // todo: add third light
-  // if (temperature < GREEN_LIMIT_TEMPERATURE) {
-  //   // Green
-  // } else {
-  //   // Red
-  // }
+void showTime(const String now) {
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.setTextSize(2);
+  display.println(now);
+  display.display();
+}
+
+int updateAlarm(const int co2, const float temperature, const float pressure) {
+  if (co2 > GREEN_LIMIT_CO2) {
+    return 1;
+  }
+  if (temperature > GREEN_LIMIT_TEMPERATURE) {
+    return 2;
+  }
+  if (pressure < GREEN_LIMIT_PRESSURE_MIN || pressure > GREEN_LIMIT_PRESSURE_MAX) {
+    return 3;
+  }
+  return 0;
+}
+
+void updateLEDs(const int alarm) {
+  switch (alarm) {
+    case 1: // CO2
+      mcp.digitalWrite(MCP_CO2_RED_LED_PIN, HIGH);
+      mcp.digitalWrite(MCP_CO2_GREEN_LED_PIN, LOW);
+      break;
+    case 2: // TEMP
+      mcp.digitalWrite(MCP_TEMP_RED_LED_PIN, HIGH);
+      mcp.digitalWrite(MCP_TEMP_GREEN_LED_PIN, LOW);
+      break;
+    case 3: // PRESS
+      mcp.digitalWrite(MCP_PRESS_RED_LED_PIN, HIGH);
+      mcp.digitalWrite(MCP_PRESS_GREEN_LED_PIN, LOW);
+      break;
+    case 0:
+    default:
+      mcp.digitalWrite(MCP_CO2_GREEN_LED_PIN, HIGH);
+      mcp.digitalWrite(MCP_TEMP_GREEN_LED_PIN, HIGH);
+      mcp.digitalWrite(MCP_PRESS_GREEN_LED_PIN, HIGH);
+
+      mcp.digitalWrite(MCP_CO2_RED_LED_PIN, LOW);
+      mcp.digitalWrite(MCP_TEMP_RED_LED_PIN, LOW);
+      mcp.digitalWrite(MCP_PRESS_RED_LED_PIN, LOW);
+      break;
+  }
 }
 
 void updateDisplay(const int displayState, const int co2, const float temperature, const float pressure) {
@@ -269,6 +325,8 @@ void displaySummary(const int co2, const float temperature, const float pressure
 
 void writeToSD(const int co2, const float temperature, const float pressure, const float humidity) {
   String dataString = "";
+  dataString += getISOTimeNow();
+  dataString += ",";
   dataString += String(co2);
   dataString += ",";
   dataString += String(temperature);
@@ -280,6 +338,41 @@ void writeToSD(const int co2, const float temperature, const float pressure, con
   logfile.flush();
 
   Serial.println(dataString);
+}
+
+void refreshButtonState(void) {
+  // read the state of the switch into a local variable:
+  int reading = mcp.digitalRead(MCP_INPUTPIN);
+
+  // check to see if you just pressed the button
+  // (i.e. the input went from LOW to HIGH), and you've waited long enough
+  // since the last press to ignore any noise:
+
+  // If the switch changed, due to noise or pressing:
+  if (reading != lastButtonState) {
+    // reset the debouncing timer
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // whatever the reading is at, it's been there for longer than the debounce
+    // delay, so take it as the actual current state:
+
+    // if the button state has changed:
+    if (reading != buttonState) {
+      buttonState = reading;
+      if (buttonState == LOW) {
+        Serial.println(F("pressed"));
+        manual = !manual;
+        displayState = 0;
+      } else {
+        Serial.println(F("released"));
+      }
+    }
+  }
+
+  // save the reading. Next time through the loop, it'll be the lastButtonState:
+  lastButtonState = reading;
 }
 
 // blink out an error code
