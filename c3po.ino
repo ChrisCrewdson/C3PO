@@ -6,15 +6,16 @@
 #include <Adafruit_SPITFT.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_SSD1306.h>
+#include <ArduinoJson.h>
 #include <gfxfont.h>
 #include <RTClib.h>
 #include <SD.h>
 #include <splash.h>
 #include <Wire.h>
 
-#define MCP_ADDRESS 0x27
-#define SSD_ADDRESS 0x3C
-#define BME_ADDRESS 0x76
+#define MCP_ADDRESS 0x27 // io breakout
+#define SSD_ADDRESS 0x3C // oled display
+#define BME_ADDRESS 0x76 // barometric sensor
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -32,20 +33,33 @@
 
 #define CSV_HEADER F("datetime,co2,temperature,pressure,humidity")
 
+#define ERR_CARD_INIT_FAILED F("Card init. failed!")
+
 #define CARD_CHIP_SELECT 4
 
-const unsigned long READ_PERIOD = 1000000; // one second
-const unsigned long STATE_PERIOD = 3000000; // three seconds
+struct Config {
+  long readperiod;
+  long stateperiod;
+  float greenlimitco2max;
+  float greenlimitpressuremin;
+  float greenlimitpressuremax;
+  float greenlimittemperaturemax;
+};
+
+const char *filename = "/CONFIG.TXT";
+Config config;
+
+const unsigned long READ_PERIOD_DEFAULT = 1000000; // one second
+const unsigned long STATE_PERIOD_DEFAULT = 3000000; // three seconds
 
 // green levels
 // co2 < 2000 ppm
-const float GREEN_LIMIT_CO2 = 2000.0F;
-// pressure 2.0-3.5 PSI
-const float GREEN_LIMIT_PRESSURE_MIN = 14.5F;
-const float GREEN_LIMIT_PRESSURE_MAX = 18.0F;
+const float GREEN_LIMIT_CO2_MAX_DEFAULT = 2000.0F;
+// pressure 2.0-3.5 PSI from atmospheric
+const float GREEN_LIMIT_PRESSURE_MIN_DEFAULT = 14.5F;
+const float GREEN_LIMIT_PRESSURE_MAX_DEFAULT = 18.0F;
 // temperature < 75 F
-const float GREEN_LIMIT_TEMPERATURE = 75.0F;
-// const float GREEN_LIMIT_TEMPERATURE = 95.0F;
+const float GREEN_LIMIT_TEMPERATURE_MAX_DEFAULT = 75.0F;
 
 const unsigned char psfLogo [] PROGMEM = { // 64x64px
   0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 
@@ -89,7 +103,8 @@ RTC_DS3231 rtc;
 
 File logfile;
 
-int co2 = 400; // todo: remove in favor of sensor
+// todo: remove in favor of sensor
+int co2 = 400;
 
 bool manual = false;
 int displayState = 0;
@@ -105,38 +120,39 @@ void setup() {
   drawlogo();
 
   while(!Serial && millis() < 3000) {
-    //wait for USB serial to connect or 3 seconds to elapse
+    // wait for USB serial to connect or 3 seconds to elapse
   }
   Serial.begin(9600);
-  Serial.println(F("startup"));
+  displayMessage(F("startup"));
 
   bool sdCardReady = SD.begin(CARD_CHIP_SELECT);
   if (!sdCardReady) {
-    Serial.println(F("Card init. failed!"));
-    error(2);
+    displayMessage(ERR_CARD_INIT_FAILED);
+    fatalError(2);
   } else {
-    Serial.println(F("SD card ready"));
+    displayMessage(F("SD card ready"));
   }
 
-  // todo: check for and load config for alarm limits
+  // check for and load config for alarm limits and sampling rate
+  loadConfiguration(filename, config);
 
   char filename[15];
-  strcpy(filename, "/LOG00.TXT");
+  strcpy(filename, "/LOG00.CSV");
   for (uint8_t i = 0; i < 100; i++) {
     filename[4] = '0' + i/10;
     filename[5] = '0' + i%10;
     // create if does not exist, do not open existing, write, sync after write
     if (!SD.exists(filename)) {
-      Serial.print(F("will try to use "));
+      Serial.print(F("Logging to "));
       Serial.println(filename);
       break;
     }
   }
   logfile = SD.open(filename, FILE_WRITE);
   if(!logfile) {
-    Serial.print(F("Couldnt create ")); 
+    Serial.print(F("Could not create ")); 
     Serial.println(filename);
-    error(3);
+    fatalError(3);
   }
   
   logfile.println(CSV_HEADER);
@@ -165,14 +181,19 @@ void loop() {
   refreshButtonState();
 
   static unsigned long lastRead;
-  if (micros() - lastRead >= READ_PERIOD) {
-    lastRead += READ_PERIOD;
+  float temperatureC;
+  float temperature;
+  float pressureHpa;
+  float pressure;
+  float humidity;
+  if (micros() - lastRead >= config.readperiod) {
+    lastRead += config.readperiod;
 
-    float temperatureC = bme.readTemperature(); // C
-    float temperature = temperatureC * 9.0F / 5.0F + 32.0F;
-    float pressureHpa = bme.readPressure(); // hPa -> .0001450 PSI
-    float pressure = pressureHpa * 0.00015F; // PSI
-    float humidity = bme.readHumidity();
+    temperatureC = bme.readTemperature(); // C
+    temperature = temperatureC * 9.0F / 5.0F + 32.0F;
+    pressureHpa = bme.readPressure(); // hPa -> .0001450 PSI
+    pressure = pressureHpa * 0.00015F; // PSI
+    humidity = bme.readHumidity();
 
     writeToSD(co2, temperature, pressure, humidity);
 
@@ -182,19 +203,57 @@ void loop() {
   }
 
   static unsigned long lastStateChange;
-  if (micros() - lastStateChange >= STATE_PERIOD) {
-    // todo: remove debugging output
-    Serial.print(F("alarm: ")); Serial.print(alarm);
-    Serial.print(F(" buttonState: ")); Serial.print(buttonState);
-    Serial.print(F(" manual: ")); Serial.print(manual);
-    Serial.print(F(" displayState: ")); Serial.println(displayState);
-
-    lastStateChange += STATE_PERIOD;
+  if (micros() - lastStateChange >= config.stateperiod) {
+    lastStateChange += config.stateperiod;
     if (!manual) {
       displayState++;
       if (displayState > 3) displayState = 1; // cycling skips summary
     }
   }
+}
+
+// Loads the configuration from a file
+void loadConfiguration(const char *filename, Config &config) {
+  File file = SD.open(filename);
+
+  // Allocate a temporary JsonDocument
+  // Don't forget to change the capacity to match your requirements.
+  // Use arduinojson.org/v6/assistant to compute the capacity.
+  StaticJsonDocument<256> doc;
+
+  DeserializationError deserialError = deserializeJson(doc, file);
+  if (deserialError) {
+    displayMessage(F("Failed to read CONFIG, using defaults"));
+    Serial.println(deserialError.c_str());
+  } else {
+    displayMessage(F("Read CONFIG from SD"));
+  }
+
+  // Copy values from the JsonDocument to the Config
+  config.readperiod = doc["readperiod"] | READ_PERIOD_DEFAULT;
+  config.stateperiod = doc["stateperiod"] | STATE_PERIOD_DEFAULT;
+  config.greenlimitco2max = doc["greenlimitco2max"] | GREEN_LIMIT_CO2_MAX_DEFAULT;
+  config.greenlimitpressuremin = doc["greenlimitpressuremin"] | GREEN_LIMIT_PRESSURE_MIN_DEFAULT;
+  config.greenlimitpressuremax = doc["greenlimitpressuremax"] | GREEN_LIMIT_PRESSURE_MAX_DEFAULT;
+  config.greenlimittemperaturemax = doc["greenlimittemperaturemax"] | GREEN_LIMIT_TEMPERATURE_MAX_DEFAULT;
+
+  file.close();
+
+  serializeJsonPretty(doc, Serial);
+  Serial.println();
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.setTextSize(1);
+  display.print("read period: "); display.println(config.readperiod);
+  display.print("state period: "); display.println(config.stateperiod);
+  display.print("co2 max: "); display.println(config.greenlimitco2max);
+  display.print("pressure min: "); display.println(config.greenlimitpressuremin);
+  display.print("pressure max: "); display.println(config.greenlimitpressuremax);
+  display.print("temperature max: "); display.println(config.greenlimittemperaturemax);
+  display.display();
+  delay(1000);
 }
 
 void drawlogo(void) {
@@ -225,13 +284,13 @@ void showTime(const String now) {
 }
 
 int updateAlarm(const int co2, const float temperature, const float pressure) {
-  if (co2 > GREEN_LIMIT_CO2) {
+  if (co2 > config.greenlimitco2max) {
     return 1;
   }
-  if (temperature > GREEN_LIMIT_TEMPERATURE) {
+  if (temperature > config.greenlimittemperaturemax) {
     return 2;
   }
-  if (pressure < GREEN_LIMIT_PRESSURE_MIN || pressure > GREEN_LIMIT_PRESSURE_MAX) {
+  if (pressure < config.greenlimitpressuremin || pressure > config.greenlimitpressuremax) {
     return 3;
   }
   return 0;
@@ -311,13 +370,16 @@ void displaySummary(const int co2, const float temperature, const float pressure
   display.setTextColor(SSD1306_WHITE);
 
   display.setCursor(0,0);
-  display.setTextSize(2);
+  display.setTextSize(1);
 
-  display.print(F("CO2: "));
+  display.print(F("CO2(max ")); display.print(config.greenlimitco2max); display.println(F(" ppm):"));
   display.println(co2);
-  display.print(F("Pres: "));
+
+  display.print(F("Pres(min ")); display.print(config.greenlimitpressuremin); 
+  display.print(F(",max ")); display.print(config.greenlimitpressuremax); display.println(F(" PSI):"));
   display.println(pressure, 1);
-  display.print(F("Temp: "));
+
+  display.print(F("Temp(max ")); display.print(config.greenlimittemperaturemax); display.println(F(" F):"));
   display.println(temperature, 1);
 
   display.display();
@@ -356,7 +418,7 @@ void refreshButtonState(void) {
 
   if ((millis() - lastDebounceTime) > debounceDelay) {
     // whatever the reading is at, it's been there for longer than the debounce
-    // delay, so take it as the actual current state:
+    // delay, so take it as the actual current state
 
     // if the button state has changed:
     if (reading != buttonState) {
@@ -375,17 +437,26 @@ void refreshButtonState(void) {
   lastButtonState = reading;
 }
 
-// blink out an error code
-void error(uint8_t errno) {
+void displayMessage(const String data) {
+  Serial.println(data);
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.setTextSize(1);
+  display.println(data);
+  display.display();
+  delay(1000);
+}
+
+void fatalError(const uint8_t errorNumber) {
   while(1) {
-    uint8_t i;
-    for (i=0; i<errno; i++) {
+    for (uint8_t i = 0; i < errorNumber; i++) {
       digitalWrite(13, HIGH);
       delay(100);
       digitalWrite(13, LOW);
       delay(100);
     }
-    for (i=errno; i<10; i++) {
+    for (uint8_t i = errno; i < 10; i++) {
       delay(200);
     }
   }
