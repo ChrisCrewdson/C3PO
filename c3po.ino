@@ -12,10 +12,13 @@
 #include <SD.h>
 #include <splash.h>
 #include <Wire.h>
+#include <SparkFun_Bio_Sensor_Hub_Library.h>
+#include <Wire.h>
 
 #define MCP_ADDRESS 0x27 // io breakout
 #define SSD_ADDRESS 0x3C // oled display
 #define BME_ADDRESS 0x76 // barometric sensor
+#define BIO_ADDRESS 0x55
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -36,6 +39,8 @@
 #define ERR_CARD_INIT_FAILED F("Card init. failed!")
 
 #define CARD_CHIP_SELECT 4
+#define BIO_RESET_PIN 7
+#define BIO_MFIO_PIN 8
 
 struct Config {
   long readperiod;
@@ -100,7 +105,9 @@ Adafruit_MCP23017 mcp;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_BME280 bme;
 RTC_DS3231 rtc;
+SparkFun_Bio_Sensor_Hub bioHub(BIO_ADDRESS, BIO_RESET_PIN, BIO_MFIO_PIN); 
 
+bioData body;
 File logfile;
 
 // todo: remove in favor of sensor
