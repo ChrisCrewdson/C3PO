@@ -31,13 +31,14 @@
 #define LOGO_HEIGHT   64
 #define LOGO_WIDTH    64
 
-#define MCP_CO2_GREEN_LED_PIN 0
-#define MCP_CO2_RED_LED_PIN 1
-#define MCP_TEMP_GREEN_LED_PIN 2
-#define MCP_TEMP_RED_LED_PIN 3
-#define MCP_PRESS_GREEN_LED_PIN 4
-#define MCP_PRESS_RED_LED_PIN 5
-#define MCP_INPUTPIN 6
+#define MCP_CO2_RED_LED_PIN 0
+#define MCP_CO2_GREEN_LED_PIN 1
+#define MCP_PRESS_RED_LED_PIN 2
+#define MCP_PRESS_GREEN_LED_PIN 3
+#define MCP_TEMP_RED_LED_PIN 4
+#define MCP_TEMP_GREEN_LED_PIN 5
+
+#define MCP_INPUTPIN 7
 
 #define CSV_HEADER F("datetime,co2,temperature,pressure,humidity")
 
@@ -61,13 +62,13 @@ const unsigned long READ_PERIOD_DEFAULT = 1000000; // one second
 const unsigned long STATE_PERIOD_DEFAULT = 3000000; // three seconds
 
 // green levels
-// co2 < 2000 ppm
-const float GREEN_LIMIT_CO2_MAX_DEFAULT = 2000.0F;
-// pressure 2.0-3.5 PSI from atmospheric
-const float GREEN_LIMIT_PRESSURE_MIN_DEFAULT = 14.5F;
-const float GREEN_LIMIT_PRESSURE_MAX_DEFAULT = 18.0F;
-// temperature < 75 F
-const float GREEN_LIMIT_TEMPERATURE_MAX_DEFAULT = 75.0F;
+// co2 < 4000 ppm
+const float GREEN_LIMIT_CO2_MAX_DEFAULT = 4000.0F;
+// pressure -2.0 to +3.5 PSI from sea level
+const float GREEN_LIMIT_PRESSURE_MIN_DEFAULT = -2.0F;
+const float GREEN_LIMIT_PRESSURE_MAX_DEFAULT = 3.5F;
+// temperature < 90 F
+const float GREEN_LIMIT_TEMPERATURE_MAX_DEFAULT = 90.0F;
 
 const unsigned char psfLogo [] PROGMEM = { // 64x64px
   0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 
@@ -206,14 +207,15 @@ void loop() {
   float pressureHpa;
   float pressure;
   float humidity;
-  int co2;
+  int co2 = 0;
+
   if (micros() - lastRead >= config.readperiod) {
     lastRead += config.readperiod;
 
     temperatureC = bme.readTemperature(); // C
     temperature = temperatureC * 9.0F / 5.0F + 32.0F;
     pressureHpa = bme.readPressure(); // hPa -> .0001450 PSI
-    pressure = pressureHpa * 0.00015F; // PSI
+    pressure = pressureHpa * 0.00015F - 14.6959F; // PSI delta from 1 ATM
     humidity = bme.readHumidity();
 
     if (co2Sensor.measure()) {

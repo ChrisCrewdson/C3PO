@@ -21,22 +21,22 @@ The config should be a file in JSON format called CONFIG.TXT in the root of the 
 - `greenlimitco2max`
   - Description: Maximum allowed CO2 in PPM before alarms trigger
   - Units: PPM
-  - Default: 2000
+  - Default: 4000
 
 - `greenlimitpressuremin`
   - Description: Minimum allowed pressure before alarms trigger
   - Units: PSI
-  - Default: 14.5
+  - Default: -2.0
 
 - `greenlimitpressuremax`
   - Description: Maximum allowed pressure before alarms trigger
   - Units: PSI
-  - Default: 18.0
+  - Default: 3.5
 
 - `greenlimittemperaturemax`
   - Description: Maximum allowed temperature before alarms trigger
   - Units: Degrees Fahrenheit
-  - Default: 75.0
+  - Default: 90.0
 
 
 Example config:
@@ -44,10 +44,10 @@ Example config:
 {
   "readperiod":1000000,
   "stateperiod":3000000,
-  "greenlimitco2max":2000.0,
-  "greenlimitpressuremin":14.5,
-  "greenlimitpressuremax":18.0,
-  "greenlimittemperaturemax":75.0
+  "greenlimitco2max":4000.0,
+  "greenlimitpressuremin":-2.0,
+  "greenlimitpressuremax":3.5,
+  "greenlimittemperaturemax":90.0
 }
 ```
 
@@ -58,13 +58,13 @@ See [CONFIG.TXT](./CONFIG.TXT)
 
 MCP23017 IO Expansion Board
 - i2c MCP_ADDRESS 0x27
-  - MCP_CO2_GREEN_LED_PIN 0
-  - MCP_CO2_RED_LED_PIN 1
-  - MCP_TEMP_GREEN_LED_PIN 2
-  - MCP_TEMP_RED_LED_PIN 3
-  - MCP_PRESS_GREEN_LED_PIN 4
-  - MCP_PRESS_RED_LED_PIN 5
-  - MCP_INPUTPIN 6
+  - MCP_CO2_RED_LED_PIN 0
+  - MCP_CO2_GREEN_LED_PIN 1
+  - MCP_PRESS_RED_LED_PIN 2
+  - MCP_PRESS_GREEN_LED_PIN 3
+  - MCP_TEMP_RED_LED_PIN 4
+  - MCP_TEMP_GREEN_LED_PIN 5
+  - MCP_INPUTPIN 7
 
 SSD1306 128x64 OLED
 - i2c SSD_ADDRESS 0x3C
