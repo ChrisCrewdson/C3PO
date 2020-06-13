@@ -11,11 +11,9 @@
 #include <RTClib.h>
 #include <SD.h>
 #include <splash.h>
-
-// #define __AVR__
 #include <Wire.h>
 
-// #define WIRE Wire
+#define __AVR__
 // CO2 sensor
 // from lib: https://github.com/SandboxElectronics/UART_Bridge
 #include <SC16IS750.h>
