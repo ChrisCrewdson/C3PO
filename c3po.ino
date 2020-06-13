@@ -11,11 +11,21 @@
 #include <RTClib.h>
 #include <SD.h>
 #include <splash.h>
+
+// #define __AVR__
 #include <Wire.h>
+
+// #define WIRE Wire
+// CO2 sensor
+// from lib: https://github.com/SandboxElectronics/UART_Bridge
+#include <SC16IS750.h>
+// from lib: https://github.com/SandboxElectronics/NDIRZ16
+#include <NDIRZ16.h>
 
 #define MCP_ADDRESS 0x27 // io breakout
 #define SSD_ADDRESS 0x3C // oled display
 #define BME_ADDRESS 0x76 // barometric sensor
+#define MHZ_ADDRESS 0x9A // co2 sensor
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -101,10 +111,11 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_BME280 bme;
 RTC_DS3231 rtc;
 
-File logfile;
+// CO2: MH-Z16 and UART adapter
+SC16IS750 co2i2cUart = SC16IS750(SC16IS750_PROTOCOL_I2C,SC16IS750_ADDRESS_BB);
+NDIRZ16 co2Sensor = NDIRZ16(&co2i2cUart);
 
-// todo: remove in favor of sensor
-int co2 = 400;
+File logfile;
 
 bool manual = false;
 int displayState = 0;
@@ -154,11 +165,22 @@ void setup() {
     Serial.println(filename);
     fatalError(3);
   }
-  
+
   logfile.println(CSV_HEADER);
   logfile.flush();
   Serial.println(CSV_HEADER);
-  
+
+  // CO2 sensor setup
+  co2i2cUart.begin(9600);
+  if (co2i2cUart.ping()) {
+    Serial.println("SC16IS750 found.");
+    Serial.println("Wait 10 seconds for sensor initialization...");
+    delay(10000);
+  } else {
+    Serial.println("SC16IS750 not found.");
+  }
+  power(1);
+
   bme.begin(BME_ADDRESS);
 
   mcp.begin(MCP_ADDRESS);
@@ -186,6 +208,7 @@ void loop() {
   float pressureHpa;
   float pressure;
   float humidity;
+  int co2;
   if (micros() - lastRead >= config.readperiod) {
     lastRead += config.readperiod;
 
@@ -194,6 +217,12 @@ void loop() {
     pressureHpa = bme.readPressure(); // hPa -> .0001450 PSI
     pressure = pressureHpa * 0.00015F; // PSI
     humidity = bme.readHumidity();
+
+    if (co2Sensor.measure()) {
+      co2 = co2Sensor.ppm;
+    } else {
+      Serial.println("CO2 sensor communication error");
+    }
 
     writeToSD(co2, temperature, pressure, humidity);
 
@@ -459,5 +488,17 @@ void fatalError(const uint8_t errorNumber) {
     for (uint8_t i = errno; i < 10; i++) {
       delay(200);
     }
+  }
+}
+
+// Power control function for NDIR CO2 sensor. 1=ON, 0=OFF
+void power (uint8_t state) {
+  co2i2cUart.pinMode(0, INPUT); // set up the power control pin
+
+  if (state) {
+    co2i2cUart.pinMode(0, INPUT); // turn on the power of MH-Z16
+  } else {
+    co2i2cUart.pinMode(0, OUTPUT);
+    co2i2cUart.digitalWrite(0, 0); // turn off the power of MH-Z16
   }
 }
