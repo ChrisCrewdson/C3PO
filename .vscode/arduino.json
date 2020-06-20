@@ -2,5 +2,5 @@
     "board": "adafruit:samd:adafruit_feather_m0",
     "configuration": "usbstack=arduino,debug=off",
     "sketch": "c3po.ino",
-    "port": "COM10"
+    "port": "COM13"
 }
