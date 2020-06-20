@@ -160,7 +160,7 @@ void setup() {
   }
   logfile = SD.open(filename, FILE_WRITE);
   if(!logfile) {
-    Serial.print(F("Could not create ")); 
+    displayMessage("Could not create log file!");
     Serial.println(filename);
     fatalError(3);
   }
@@ -172,11 +172,10 @@ void setup() {
   // CO2 sensor setup
   co2i2cUart.begin(9600);
   if (co2i2cUart.ping()) {
-    Serial.println("SC16IS750 found.");
-    Serial.println("Wait 10 seconds for sensor initialization...");
+    displayMessage("Wait 10 seconds for CO2 sensor initialization...");
     delay(10000);
   } else {
-    Serial.println("SC16IS750 not found.");
+    displayMessage("CO2 sensor not found.");
   }
   power(1);
 
@@ -191,8 +190,6 @@ void setup() {
   mcp.pinMode(MCP_PRESS_RED_LED_PIN, OUTPUT);
   mcp.pinMode(MCP_INPUTPIN, INPUT);
   mcp.pullUp(MCP_INPUTPIN, HIGH);  // turn on a 100K pullup internally
-
-  delay(1000); // show logo for a second
 }
 
 void loop() {
@@ -221,7 +218,7 @@ void loop() {
     if (co2Sensor.measure()) {
       co2 = co2Sensor.ppm;
     } else {
-      Serial.println("CO2 sensor communication error");
+      displayMessage("CO2 sensor communication error");
     }
 
     writeToSD(co2, temperature, pressure, humidity);
