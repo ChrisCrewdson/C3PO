@@ -118,7 +118,7 @@ File logfile;
 
 bool manual = false;
 int displayState = 0;
-int alarm = 0;
+int alarms[] = {false, false, false}; // co2, press, temp
 int buttonState = LOW;     // the current reading from the input pin
 int lastButtonState = LOW; // the previous reading from the input pin
 
@@ -196,7 +196,6 @@ void setup() {
 
 void loop() {
   if (displayState > 3) displayState = 0;
-  if (alarm > 3) alarm = 0;
 
   refreshButtonState();
 
@@ -220,14 +219,14 @@ void loop() {
     if (co2Sensor.measure()) {
       co2 = co2Sensor.ppm;
     } else {
-      displayMessage("CO2 sensor communication error");
+      displayMessage(F("CO2 sensor communication error"));
     }
 
     writeToSD(co2, temperature, pressure, humidity);
 
-    alarm = updateAlarm(co2, temperature, pressure);
-    updateLEDs(alarm);
-    updateDisplay(alarm > 0 ? alarm : displayState, co2, temperature, pressure);
+    updateAlarms(alarms, co2, temperature, pressure);
+    updateLEDs(alarms);
+    updateDisplay(alarms, displayState, co2, temperature, pressure);
   }
 
   static unsigned long lastStateChange;
@@ -237,6 +236,7 @@ void loop() {
       displayState++;
       if (displayState > 3) displayState = 1; // cycling skips summary
     }
+    updateDisplay(alarms, displayState, co2, temperature, pressure);
   }
 }
 
@@ -311,47 +311,53 @@ void showTime(const String now) {
   display.display();
 }
 
-int updateAlarm(const int co2, const float temperature, const float pressure) {
+void updateAlarms(int alarms[], const int co2, const float temperature, const float pressure) {
   if (co2 > config.greenlimitco2max) {
-    return 1;
+    alarms[0] = true;
+  } else {
+    alarms[0] = false;
   }
-  if (temperature > config.greenlimittemperaturemax) {
-    return 2;
-  }
+
   if (pressure < config.greenlimitpressuremin || pressure > config.greenlimitpressuremax) {
-    return 3;
+    alarms[1] = true;
+  } else {
+    alarms[1] = false;
   }
-  return 0;
-}
 
-void updateLEDs(const int alarm) {
-  switch (alarm) {
-    case 1: // CO2
-      mcp.digitalWrite(MCP_CO2_RED_LED_PIN, HIGH);
-      mcp.digitalWrite(MCP_CO2_GREEN_LED_PIN, LOW);
-      break;
-    case 2: // TEMP
-      mcp.digitalWrite(MCP_TEMP_RED_LED_PIN, HIGH);
-      mcp.digitalWrite(MCP_TEMP_GREEN_LED_PIN, LOW);
-      break;
-    case 3: // PRESS
-      mcp.digitalWrite(MCP_PRESS_RED_LED_PIN, HIGH);
-      mcp.digitalWrite(MCP_PRESS_GREEN_LED_PIN, LOW);
-      break;
-    case 0:
-    default:
-      mcp.digitalWrite(MCP_CO2_GREEN_LED_PIN, HIGH);
-      mcp.digitalWrite(MCP_TEMP_GREEN_LED_PIN, HIGH);
-      mcp.digitalWrite(MCP_PRESS_GREEN_LED_PIN, HIGH);
-
-      mcp.digitalWrite(MCP_CO2_RED_LED_PIN, LOW);
-      mcp.digitalWrite(MCP_TEMP_RED_LED_PIN, LOW);
-      mcp.digitalWrite(MCP_PRESS_RED_LED_PIN, LOW);
-      break;
+  if (temperature > config.greenlimittemperaturemax) {
+    alarms[2] = true;
+  } else {
+    alarms[2] = false;
   }
 }
 
-void updateDisplay(const int displayState, const int co2, const float temperature, const float pressure) {
+void updateLEDs(int alarms[]) {
+  if (alarms[0]) {
+    mcp.digitalWrite(MCP_CO2_RED_LED_PIN, HIGH);
+    mcp.digitalWrite(MCP_CO2_GREEN_LED_PIN, LOW);
+  } else {
+    mcp.digitalWrite(MCP_CO2_GREEN_LED_PIN, HIGH);
+    mcp.digitalWrite(MCP_CO2_RED_LED_PIN, LOW);
+  }
+
+  if (alarms[1]) {
+    mcp.digitalWrite(MCP_PRESS_RED_LED_PIN, HIGH);
+    mcp.digitalWrite(MCP_PRESS_GREEN_LED_PIN, LOW);
+  } else {
+    mcp.digitalWrite(MCP_PRESS_GREEN_LED_PIN, HIGH);
+    mcp.digitalWrite(MCP_PRESS_RED_LED_PIN, LOW);
+  }
+
+  if (alarms[2]) {
+    mcp.digitalWrite(MCP_TEMP_RED_LED_PIN, HIGH);
+    mcp.digitalWrite(MCP_TEMP_GREEN_LED_PIN, LOW);
+  } else {
+    mcp.digitalWrite(MCP_TEMP_GREEN_LED_PIN, HIGH);
+    mcp.digitalWrite(MCP_TEMP_RED_LED_PIN, LOW);
+  }
+}
+
+void updateDisplay(int alarms[], const int displayState, const int co2, const float temperature, const float pressure) {
   switch (displayState) {
     case 1:
       // co2
@@ -365,17 +371,6 @@ void updateDisplay(const int displayState, const int co2, const float temperatur
       display.display();
       break;
     case 2:
-      // temperature
-      display.clearDisplay();
-      display.setTextColor(SSD1306_WHITE);
-      display.setCursor(0,0);
-      display.setTextSize(3);
-      display.println(F("Temp"));
-      display.setTextSize(4);
-      display.println(temperature, 1);
-      display.display();
-      break;
-    case 3:
       // pressure
       display.clearDisplay();
       display.setTextColor(SSD1306_WHITE);
@@ -384,6 +379,17 @@ void updateDisplay(const int displayState, const int co2, const float temperatur
       display.println(F("Pres"));
       display.setTextSize(4);
       display.println(pressure, 2);
+      display.display();
+      break;
+    case 3:
+      // temperature
+      display.clearDisplay();
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0,0);
+      display.setTextSize(3);
+      display.println(F("Temp"));
+      display.setTextSize(4);
+      display.println(temperature, 1);
       display.display();
       break;
     case 0:
