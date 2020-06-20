@@ -13,12 +13,19 @@
 #include <splash.h>
 #include <Wire.h>
 #include <SparkFun_Bio_Sensor_Hub_Library.h>
-#include <Wire.h>
+
+#define __AVR__
+// CO2 sensor
+// from lib: https://github.com/SandboxElectronics/UART_Bridge
+#include <SC16IS750.h>
+// from lib: https://github.com/SandboxElectronics/NDIRZ16
+#include <NDIRZ16.h>
 
 #define MCP_ADDRESS 0x27 // io breakout
 #define SSD_ADDRESS 0x3C // oled display
 #define BME_ADDRESS 0x76 // barometric sensor
-#define BIO_ADDRESS 0x55
+#define MHZ_ADDRESS 0x9A // co2 sensor
+#define BIO_ADDRESS 0x55 // pulseox sensor
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -26,13 +33,14 @@
 #define LOGO_HEIGHT   64
 #define LOGO_WIDTH    64
 
-#define MCP_CO2_GREEN_LED_PIN 0
-#define MCP_CO2_RED_LED_PIN 1
-#define MCP_TEMP_GREEN_LED_PIN 2
-#define MCP_TEMP_RED_LED_PIN 3
-#define MCP_PRESS_GREEN_LED_PIN 4
-#define MCP_PRESS_RED_LED_PIN 5
-#define MCP_INPUTPIN 6
+#define MCP_CO2_RED_LED_PIN 0
+#define MCP_CO2_GREEN_LED_PIN 1
+#define MCP_PRESS_RED_LED_PIN 2
+#define MCP_PRESS_GREEN_LED_PIN 3
+#define MCP_TEMP_RED_LED_PIN 4
+#define MCP_TEMP_GREEN_LED_PIN 5
+
+#define MCP_INPUTPIN 7
 
 #define CSV_HEADER F("datetime,co2,temperature,pressure,humidity")
 
@@ -58,13 +66,13 @@ const unsigned long READ_PERIOD_DEFAULT = 1000000; // one second
 const unsigned long STATE_PERIOD_DEFAULT = 3000000; // three seconds
 
 // green levels
-// co2 < 2000 ppm
-const float GREEN_LIMIT_CO2_MAX_DEFAULT = 2000.0F;
-// pressure 2.0-3.5 PSI from atmospheric
-const float GREEN_LIMIT_PRESSURE_MIN_DEFAULT = 14.5F;
-const float GREEN_LIMIT_PRESSURE_MAX_DEFAULT = 18.0F;
-// temperature < 75 F
-const float GREEN_LIMIT_TEMPERATURE_MAX_DEFAULT = 75.0F;
+// co2 < 4000 ppm
+const float GREEN_LIMIT_CO2_MAX_DEFAULT = 4000.0F;
+// pressure -2.0 to +3.5 PSI from sea level
+const float GREEN_LIMIT_PRESSURE_MIN_DEFAULT = -2.0F;
+const float GREEN_LIMIT_PRESSURE_MAX_DEFAULT = 3.5F;
+// temperature < 90 F
+const float GREEN_LIMIT_TEMPERATURE_MAX_DEFAULT = 90.0F;
 
 const unsigned char psfLogo [] PROGMEM = { // 64x64px
   0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 
@@ -105,13 +113,15 @@ Adafruit_MCP23017 mcp;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_BME280 bme;
 RTC_DS3231 rtc;
+
 SparkFun_Bio_Sensor_Hub bioHub(BIO_ADDRESS, BIO_RESET_PIN, BIO_MFIO_PIN); 
-
 bioData body;
-File logfile;
 
-// todo: remove in favor of sensor
-int co2 = 400;
+// CO2: MH-Z16 and UART adapter
+SC16IS750 co2i2cUart = SC16IS750(SC16IS750_PROTOCOL_I2C,SC16IS750_ADDRESS_BB);
+NDIRZ16 co2Sensor = NDIRZ16(&co2i2cUart);
+
+File logfile;
 
 bool manual = false;
 int displayState = 0;
@@ -161,11 +171,22 @@ void setup() {
     Serial.println(filename);
     fatalError(3);
   }
-  
+
   logfile.println(CSV_HEADER);
   logfile.flush();
   Serial.println(CSV_HEADER);
-  
+
+  // CO2 sensor setup
+  co2i2cUart.begin(9600);
+  if (co2i2cUart.ping()) {
+    Serial.println("SC16IS750 found.");
+    Serial.println("Wait 10 seconds for sensor initialization...");
+    delay(10000);
+  } else {
+    Serial.println("SC16IS750 not found.");
+  }
+  power(1);
+
   bme.begin(BME_ADDRESS);
 
   mcp.begin(MCP_ADDRESS);
@@ -193,14 +214,22 @@ void loop() {
   float pressureHpa;
   float pressure;
   float humidity;
+  int co2 = 0;
+
   if (micros() - lastRead >= config.readperiod) {
     lastRead += config.readperiod;
 
     temperatureC = bme.readTemperature(); // C
     temperature = temperatureC * 9.0F / 5.0F + 32.0F;
     pressureHpa = bme.readPressure(); // hPa -> .0001450 PSI
-    pressure = pressureHpa * 0.00015F; // PSI
+    pressure = pressureHpa * 0.00015F - 14.6959F; // PSI delta from 1 ATM
     humidity = bme.readHumidity();
+
+    if (co2Sensor.measure()) {
+      co2 = co2Sensor.ppm;
+    } else {
+      Serial.println("CO2 sensor communication error");
+    }
 
     writeToSD(co2, temperature, pressure, humidity);
 
@@ -466,5 +495,17 @@ void fatalError(const uint8_t errorNumber) {
     for (uint8_t i = errno; i < 10; i++) {
       delay(200);
     }
+  }
+}
+
+// Power control function for NDIR CO2 sensor. 1=ON, 0=OFF
+void power (uint8_t state) {
+  co2i2cUart.pinMode(0, INPUT); // set up the power control pin
+
+  if (state) {
+    co2i2cUart.pinMode(0, INPUT); // turn on the power of MH-Z16
+  } else {
+    co2i2cUart.pinMode(0, OUTPUT);
+    co2i2cUart.digitalWrite(0, 0); // turn off the power of MH-Z16
   }
 }

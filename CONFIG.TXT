@@ -1,8 +1,8 @@
 {
   "readperiod":1000000,
   "stateperiod":3000000,
-  "greenlimitco2max":2000.0,
-  "greenlimitpressuremin":14.5,
-  "greenlimitpressuremax":18.0,
-  "greenlimittemperaturemax":75.0
+  "greenlimitco2max":4000.0,
+  "greenlimitpressuremin":-2.0,
+  "greenlimitpressuremax":3.5,
+  "greenlimittemperaturemax":90.0
 }
