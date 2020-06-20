@@ -160,7 +160,7 @@ void setup() {
   }
   logfile = SD.open(filename, FILE_WRITE);
   if(!logfile) {
-    displayMessage("Could not create log file!");
+    displayMessage(F("Could not create log file!"));
     Serial.println(filename);
     fatalError(3);
   }
@@ -172,10 +172,12 @@ void setup() {
   // CO2 sensor setup
   co2i2cUart.begin(9600);
   if (co2i2cUart.ping()) {
-    displayMessage("Wait 10 seconds for CO2 sensor initialization...");
-    delay(10000);
+    for (uint8_t i = 0; i < 10; i++) {
+      displayMessage("Wait " + String(10 - i) + " seconds for CO2 sensor initialization...");
+      delay(1000);
+    }
   } else {
-    displayMessage("CO2 sensor not found.");
+    displayMessage(F("CO2 sensor not found."));
   }
   power(1);
 
